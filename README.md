@@ -3,8 +3,6 @@
 Hardware-aware multi-objective neural architecture search (NAS) for the **Apple Neural Engine (ANE)**,
 using a genetic algorithm (**NSGA-II**).
 
-Semestral project for NIE-MVI (Computational Intelligence Methods), FIT CTU.
-
 > **Status:** early work in progress. The search space and genome (`genome.py`) are being written.
 > Nothing below the "Genome" section exists yet.
 
