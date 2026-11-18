@@ -1,0 +1,19 @@
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+.DS_Store
+.venv/
+venv/
+
+# data, checkpoints, compiled models, logs
+data/
+checkpoints/
+*.pt
+*.pth
+*.mlpackage/
+*.mlmodel
+*.mlmodelc/
+runs/
+
+# local Claude settings
+.claude/settings.local.json
