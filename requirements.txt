@@ -1,0 +1,9 @@
+torch>=2.2
+torchvision>=0.17
+numpy
+scipy
+pandas
+matplotlib
+pymoo>=0.6.1
+coremltools>=8.0
+jupyter
