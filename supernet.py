@@ -257,8 +257,9 @@ if __name__ == "__main__":
     p.add_argument("--dataset", default="imagenette", choices=["imagenette", "cifar10"])
     p.add_argument("--epochs", type=int, default=100)
     p.add_argument("--warmup", type=int, default=3)
-    p.add_argument("--batch-size", type=int, default=128)
-    p.add_argument("--lr", type=float, default=0.1)
+    # 64, not 128: on a 16 GB Mac, batch 128 makes the sandwich step swap to disk (100+ s per step)
+    p.add_argument("--batch-size", type=int, default=64)
+    p.add_argument("--lr", type=float, default=0.05)   # linear scaling: 0.1 at batch 128
     p.add_argument("--wd", type=float, default=4e-5)
     p.add_argument("--n-random", type=int, default=2, help="random subnets per batch (sandwich rule)")
     p.add_argument("--eval-every", type=int, default=5)

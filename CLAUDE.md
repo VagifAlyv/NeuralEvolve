@@ -26,6 +26,8 @@ weights are always trained by SGD (the instructor warned that evolving weights d
 - `search.py` — `Objective` (logs every call), NSGA-II (pymoo), random, regularized evolution, local search, hypervolume.
 - `experiments.py` — RQ1–RQ4 grids, final search, post-processing.
 - `train_standalone.py` — from-scratch training (RQ5, final front, baseline).
+- `colab.ipynb` — runs the GPU steps (supernet, accuracy dataset, from-scratch training) on Colab; clones
+  the repo from GitHub, results on Google Drive. Mac-only: Core ML latency, experiments, iPhone.
 - `analysis.py`, `notebook.ipynb` — tables/figures. `docs/` — report, blog post, pitch.
 - Outputs go to `runs/` (gitignored) and `figures/`. README has the full command order.
 
@@ -40,8 +42,11 @@ weights are always trained by SGD (the instructor warned that evolving weights d
 
 ## Environment
 - macOS, Apple Silicon, PyTorch with MPS. Python: `python3`. `pip install -r requirements.txt`.
-- Status (2026-11-19): code written by Claude at the user's request, NOT yet run. First run: check
-  `python latency.py names` (Core ML weight names must contain `stages_<i>_`).
+- Status (2026-11-19): code written by Claude at the user's request. First run done up to a 1-epoch debug
+  supernet: venv is Python 3.12 (`.venv`; coremltools does not support 3.14). Fixes from the first run:
+  BatchNorm folded before Core ML conversion (`latency.fold_bn`, else stage weights lose their names),
+  scikit-learn added, supernet batch 64 / lr 0.05 on the 16 GB M4 (batch 128 swaps to disk).
+  Measured on M4: 3.4 min/supernet epoch, ~4 s per subnet accuracy, ~2 s per Core ML latency.
 
 ## Conventions
 - Every evaluation is logged (CSV per run) and cached (`runs/cache.sqlite`); runs are resumable.

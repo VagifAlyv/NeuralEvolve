@@ -108,6 +108,11 @@ python train_standalone.py --baseline --epochs 40 --out runs/final/baseline_trai
 jupyter notebook notebook.ipynb                    # figures for everything
 ```
 
+**Training on Google Colab instead.** The GPU-heavy steps (supernet, accuracy dataset, all
+from-scratch training) can run on Colab with `colab.ipynb`, which clones this repository and saves
+results to Google Drive. Core ML latency, the search experiments and the iPhone export stay on the Mac.
+Push your latest code before opening the notebook.
+
 Every step can be stopped and restarted: finished runs are skipped and evaluations are cached in
 `runs/cache.sqlite`. Use `--dataset cifar10` on `supernet.py` only to debug quickly.
 

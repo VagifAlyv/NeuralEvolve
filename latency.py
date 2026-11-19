@@ -1,15 +1,6 @@
-"""Real latency on Apple hardware with Core ML.
 
-Latency does not depend on the weight VALUES, only on the architecture and the palettization,
-so untrained networks are converted and timed.
-
-    python latency.py names                        # print Core ML weight names (check the stage regex once)
-    python latency.py collect --n 400              # random genomes -> runs/latency_dataset.csv
-    python latency.py measure --csv FRONT.csv      # time every genome of a CSV on several compute units
-    python latency.py export-iphone --csv FRONT.csv  # .mlpackage files to time on the iPhone in Xcode
-    python latency.py baseline                     # MobileNetV2 baselines
-"""
 import argparse
+import copy
 import csv
 import json
 import random
@@ -36,10 +27,29 @@ def _ct():
     return ct
 
 
+def fold_bn(model):
+    """Copy of model with every BatchNorm folded into the conv before it (`x_conv` + `x_bn`).
+
+    Core ML would fold them anyway, but its folded weights get anonymous names (`const_102`), so
+    STAGE_RE could not find them and per-stage palettization would skip all convs. Folding here keeps
+    the PyTorch names (`stages_3_1_proj_conv_weight`).
+    """
+    from torch.nn.utils.fusion import fuse_conv_bn_eval
+    model = copy.deepcopy(model).eval()
+    for mod in model.modules():
+        for name in [n for n in mod._modules if n.endswith("_bn")]:
+            conv_name = name[:-3] + "_conv"
+            conv = getattr(mod, conv_name, None)
+            if isinstance(conv, torch.nn.Conv2d):
+                setattr(mod, conv_name, fuse_conv_bn_eval(conv, getattr(mod, name)))
+                setattr(mod, name, torch.nn.Identity())
+    return model
+
+
 def to_coreml(model, resolution, bits=None):
     """PyTorch model -> Core ML ML Program (float16), palettized per stage when bits < 16."""
     ct = _ct()
-    model = model.eval()
+    model = fold_bn(model)
     example = torch.rand(1, 3, resolution, resolution)
     with torch.no_grad():
         traced = torch.jit.trace(model, example)
