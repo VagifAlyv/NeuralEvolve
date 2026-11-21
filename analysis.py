@@ -200,7 +200,7 @@ def rq3():
     table = _hv_table(runs, lo, hi, reference="joint")
     fig, ax = plt.subplots(figsize=(6, 4.5))
     for v, lst in runs.items():
-        fr = front(lst[0][1]).sort_values("f_size")
+        fr = front(lst[0][1], cols=["f_error", "f_size"]).sort_values("f_size")
         ax.step(fr["f_size"], 1 - fr["f_error"], where="post", marker=".", label=v)
     ax.set(xlabel="size [MB]", ylabel="accuracy", title="RQ3: joint vs sequential compression")
     ax.legend()

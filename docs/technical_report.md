@@ -1,7 +1,7 @@
 # NeuralEvolve: technical report
 
-*NIE-MVI semestral project. Status 2026-11-21: supernet, surrogates, RQ1, RQ2 and RQ5 are done; sections
-marked **TODO** still need results (RQ3, RQ4, RQ6, RQ7, final front).*
+*NIE-MVI semestral project. Status 2026-11-21: supernet, surrogates, RQ1, RQ2, RQ3 and RQ5 are done; sections
+marked **TODO** still need results (RQ4, RQ6, RQ7, final front).*
 
 ## 1. Problem
 
@@ -159,7 +159,28 @@ shape, which MACs cannot see (RQ7 looks at which genes matter). MACs still found
 (0.123 ms), so it is a reasonable free proxy; the predictor is better at the middle of the front.
 
 ### 6.4 RQ3: joint architecture + compression search
-**TODO** (`analysis.rq3()`).
+Three ways to get compressed networks, 3 seeds each, predictor objectives (`figures/rq3.png`):
+*joint* (NSGA-II evolves architecture and per-stage bits together, 2000 evaluations), *architecture only*
+(same search, every stage kept at 16 bits) and *sequential* (the architecture-only front, then every
+network on it compressed uniformly to 8, 6 and 4 bits: 255–456 extra evaluations).
+
+| Variant | Hypervolume (mean ± std) | p vs joint | Smallest network | Front size |
+|---|---|---|---|---|
+| **joint** | **0.914 ± 0.005** | – | 0.26 MB | 131 |
+| sequential | 0.888 ± 0.019 | 0.4 | 0.23 MB | 142 |
+| architecture only | 0.850 ± 0.011 | 0.1 | 0.38 MB | 124 |
+
+Joint search gives the best and most stable fronts, even though sequential gets its extra evaluations for
+free; cutting sequential to the same total of 2000 evaluations lowers it to 0.884. Searching without
+compression is clearly worst, because 16-bit networks cannot reach the small-size end of the front. The
+differences are not significant with 3 seeds (p = 0.1 is the smallest possible value for 3 vs 3), so this
+is a consistent trend rather than a proven effect. Sequential compression does find the smallest network
+(uniform 4 bits on an already small architecture), but its front is less even in the middle.
+
+On the joint fronts the search uses mixed precision: 41 % of blocks sit in 8-bit stages, 23 % in 6-bit,
+16 % in 4-bit and 20 % stay at 16 bits. The average bit width falls from about 11 in the first stage to 4.6
+in the last, so the search compresses the late, wide stages (which hold most of the weights) and keeps
+early stages precise.
 
 ### 6.5 RQ4: GA ablations
 **TODO** (`analysis.rq4()`).
@@ -196,7 +217,7 @@ The search therefore uses the supernet as a coarse filter, and the final front i
 ### 6.10 Cost
 So far: supernet 1.4 GPU hours (Colab), RQ5 3.3 GPU hours (Kaggle), latency dataset about 15 min on
 the Mac, RQ1 about 20 min and RQ2 9 min of search plus about 4.5 h
-of ANE measurement (954 front networks, Core ML conversion dominates) on the Mac. **TODO:** add the
+of ANE measurement (954 front networks, Core ML conversion dominates), RQ3 about 6 min on the Mac. **TODO:** add the
 remaining experiments.
 
 ## 7. Limitations
