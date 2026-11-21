@@ -55,7 +55,9 @@ weights are always trained by SGD (the instructor warned that evolving weights d
   (`runs/rq5/standalone_40ep.csv`, τ 0.50 vs palettized test acc). RQ1 done (NSGA-II HV 0.940 > local 0.876 >
   regevo 0.827 > random 0.791). RQ2 done (measured-latency HV: predictor 0.789 > MACs 0.772 > params 0.745,
   not significant at 3 seeds; rq2-measure took ~4.5 h for 954 nets). RQ3 done (HV joint 0.914 > sequential
-  0.888 > arch-only 0.850). Report filled for RQ1-RQ3, RQ5. Next on the Mac: rq4, final, validate-final.
+  0.888 > arch-only 0.850). RQ4 done (default robust; mutation rate/repair
+  insensitive; one-point/stage-wise crossover and pop 20/100 worse). Report filled for RQ1-RQ5.
+  Next on the Mac: final, validate-final.
 
 ## Conventions
 - Every evaluation is logged (CSV per run) and cached (`runs/cache.sqlite`); runs are resumable.

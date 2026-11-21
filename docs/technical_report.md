@@ -1,7 +1,7 @@
 # NeuralEvolve: technical report
 
-*NIE-MVI semestral project. Status 2026-11-21: supernet, surrogates, RQ1, RQ2, RQ3 and RQ5 are done; sections
-marked **TODO** still need results (RQ4, RQ6, RQ7, final front).*
+*NIE-MVI semestral project. Status 2026-11-21: supernet, surrogates, RQ1–RQ5 are done; sections marked **TODO**
+still need results (RQ6, RQ7, final front).*
 
 ## 1. Problem
 
@@ -183,7 +183,39 @@ in the last, so the search compresses the late, wide stages (which hold most of 
 early stages precise.
 
 ### 6.5 RQ4: GA ablations
-**TODO** (`analysis.rq4()`).
+NSGA-II with one setting changed at a time, 2000 evaluations, 3 seeds, predictor objectives
+(`figures/rq4.png`). Default: population 50, mutation 1/91 per gene, uniform crossover, repair on.
+Hypervolumes use this RQ's own normalization, so they are not comparable with RQ1–RQ3.
+
+| Change | HV (mean ± std) | HV at 500 evals | p vs default |
+|---|---|---|---|
+| no repair | 0.869 ± 0.027 | 0.714 | 0.7 |
+| mutation 2/91 | 0.854 ± 0.014 | 0.712 | 1.0 |
+| **default** | **0.849 ± 0.006** | 0.708 | – |
+| mutation 0.5/91 | 0.843 ± 0.014 | 0.703 | 1.0 |
+| mutation 4/91 | 0.839 ± 0.015 | 0.712 | 1.0 |
+| stage-wise crossover | 0.813 ± 0.013 | 0.708 | 0.1 |
+| population 20 | 0.810 ± 0.022 | 0.719 | 0.1 |
+| population 100 | 0.799 ± 0.012 | 0.670 | 0.1 |
+| one-point crossover | 0.798 ± 0.025 | 0.691 | 0.1 |
+
+No single change is significant with 3 seeds (p = 0.1 is the minimum for 3 vs 3), but the results fall
+into two clear groups.
+
+- *Insensitive:* the mutation rate between 0.5 and 4 genes per child and the repair step all end within
+  the seed noise of the default. Turning repair off is even slightly better on average, with the largest
+  spread: without the canonical form, inactive genes keep their values and act as hidden memory that a
+  depth mutation can switch back on. Repair still matters for the cache, since without it the same network
+  appears under different genomes.
+- *Consistently worse (all 3 seeds below the default):* one-point and stage-wise crossover, and population
+  sizes 20 and 100. Uniform crossover mixes blocks from different stages freely; one-point crossover keeps
+  long runs of genes together, so it rarely combines a good early stage from one parent with a good late
+  stage from the other. Population 20 is the fastest at the start (best HV at 500 evaluations) but loses
+  diversity and stalls; population 100 spends 2000 evaluations in only 20 generations and is still far from
+  converged.
+
+The default settings were not tuned on these results, and they are close to the best found, so the RQ1–RQ3
+comparisons did not use a handicapped NSGA-II.
 
 ### 6.6 RQ5: does the supernet rank networks like training from scratch?
 15 genomes sampled across the supernet-accuracy range (75.1–88.7 %) were trained from scratch for 40 epochs on
@@ -217,7 +249,7 @@ The search therefore uses the supernet as a coarse filter, and the final front i
 ### 6.10 Cost
 So far: supernet 1.4 GPU hours (Colab), RQ5 3.3 GPU hours (Kaggle), latency dataset about 15 min on
 the Mac, RQ1 about 20 min and RQ2 9 min of search plus about 4.5 h
-of ANE measurement (954 front networks, Core ML conversion dominates), RQ3 about 6 min on the Mac. **TODO:** add the
+of ANE measurement (954 front networks, Core ML conversion dominates), RQ3 about 6 min and RQ4 about 25 min on the Mac. **TODO:** add the
 remaining experiments.
 
 ## 7. Limitations
