@@ -207,20 +207,39 @@ def validate_final(args, comps):
     write_csv(RUNS_DIR / "final" / "front_validated.csv", out)
 
 
+def select_final(args, comps):
+    """Pick the networks of the validated front to train from scratch (training all of them is too slow):
+    the accuracy-latency front plus the smallest remaining members of the full 3-objective front."""
+    with open(RUNS_DIR / "final" / "front_validated.csv") as f:
+        rows = list(csv.DictReader(f))
+    F = np.array([[1 - float(r["acc_supernet"]), float(r["latency_measured"]), float(r["size_mb"])] for r in rows])
+    on_2d, on_3d = nondominated_mask(F[:, :2]), nondominated_mask(F)
+    for r, a in zip(rows, on_2d):
+        r["why"] = "acc-latency front" if a else ""
+    rest = sorted((i for i in range(len(rows)) if on_3d[i] and not on_2d[i]), key=lambda i: F[i, 2])
+    for i in rest[:args.extra_small]:
+        rows[i]["why"] = "smallest (3-obj front)"
+    out = sorted((r for r in rows if r["why"]), key=lambda r: float(r["latency_measured"]))
+    write_csv(RUNS_DIR / "final" / "front_selected.csv", out)
+    print(f"selected {len(out)} of {len(rows)} networks -> runs/final/front_selected.csv")
+
+
 if __name__ == "__main__":
     p = argparse.ArgumentParser()
     p.add_argument("command", choices=["rq1", "rq2", "rq2-measure", "rq3", "rq3-post", "rq4", "final",
-                                       "validate-final"])
+                                       "validate-final", "select-final"])
     p.add_argument("--seeds", type=int, nargs="+")
     p.add_argument("--budget", type=int, default=2000)
     p.add_argument("--final-budget", type=int, default=5000)
     p.add_argument("--measured-budget", type=int, default=300)
     p.add_argument("--include-measured", action="store_true")
+    p.add_argument("--extra-small", type=int, default=3, help="select-final: extra small networks to add")
     p.add_argument("--accuracy", default="predictor", choices=["predictor", "supernet"])
     p.add_argument("--supernet", default=str(RUNS_DIR / "supernet" / "main.pt"))
     args = p.parse_args()
     comps = Components(args)
-    post = {"rq2-measure": rq2_measure, "rq3-post": rq3_post, "validate-final": validate_final}
+    post = {"rq2-measure": rq2_measure, "rq3-post": rq3_post, "validate-final": validate_final,
+            "select-final": select_final}
     if args.command in post:
         post[args.command](args, comps)
     else:

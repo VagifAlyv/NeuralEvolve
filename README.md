@@ -100,10 +100,11 @@ python experiments.py rq2 && python experiments.py rq2-measure
 python experiments.py rq3 && python experiments.py rq3-post
 python experiments.py rq4
 python experiments.py final && python experiments.py validate-final
+python experiments.py select-final                 # ~12 front networks to train from scratch
 python latency.py measure --csv runs/final/front_validated.csv          # RQ6: Mac CPU/GPU/ANE
 python latency.py export-iphone --csv runs/final/front_validated.csv    # RQ6: iPhone (see below)
 python train_standalone.py --sample runs/accuracy_dataset_main.csv --k 15 --epochs 40 --out runs/rq5/standalone_40ep.csv
-python train_standalone.py --from-csv runs/final/front_validated.csv --epochs 40 --out runs/final/front_trained.csv
+python train_standalone.py --from-csv runs/final/front_selected.csv --epochs 40 --out runs/final/front_trained.csv
 python train_standalone.py --baseline --epochs 40 --out runs/final/baseline_trained.csv
 jupyter notebook notebook.ipynb                    # figures for everything
 ```
