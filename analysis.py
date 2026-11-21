@@ -148,11 +148,11 @@ def rq1():
         Y = np.array([c[1][:n] for c in curves])
         ax[0].plot(curves[0][0][:n], Y.mean(0), label=v)
         ax[0].fill_between(curves[0][0][:n], Y.mean(0) - Y.std(0), Y.mean(0) + Y.std(0), alpha=0.2)
-        fr = front(lst[0][1])
-        fr = fr.sort_values("f_latency")
+        fr = front(lst[0][1], cols=["f_error", "f_latency"]).sort_values("f_latency")
         ax[1].step(fr["f_latency"], 1 - fr["f_error"], where="post", marker=".", label=v)
     ax[0].set(xlabel="evaluations", ylabel="hypervolume", title="RQ1: search progress (mean ± std)")
-    ax[1].set(xlabel="predicted latency [ms]", ylabel="accuracy", title="Fronts (seed 0, size not shown)")
+    ax[1].set(xlabel="predicted latency [ms]", ylabel="accuracy",
+              title="Error-latency front (seed 0, size ignored)")
     ax[0].legend()
     ax[1].legend()
     _save(fig, "rq1")
@@ -176,7 +176,7 @@ def rq2():
         rows.append({"speed_objective": v, "hv_measured_mean": np.mean(hv), "hv_measured_std": np.std(hv),
                      "seeds": len(hv)})
         d = lst[0]
-        d = d[nondominated_mask(d[cols].to_numpy(float))].sort_values("latency_measured")
+        d = d[nondominated_mask(d[cols[:2]].to_numpy(float))].sort_values("latency_measured")
         ax.step(d["latency_measured"], 1 - d["f_error"], where="post", marker=".", label=v)
     ax.set(xlabel="measured ANE latency [ms]", ylabel="accuracy", title="RQ2: which speed objective?")
     ax.legend()
@@ -226,17 +226,26 @@ def rq4():
 
 # ---------------------------------------------------------------- RQ5-RQ7 and the final front
 
-def rq5(path=RUNS_DIR / "rq5" / "standalone.csv"):
+def rq5(path=RUNS_DIR / "rq5" / "standalone_40ep.csv", target="test_acc_pal"):
+    """Supernet accuracy vs from-scratch accuracy. `target` is the column plotted; the table has all four
+    (search-val / test, plain / after the same palettization)."""
     if _missing(path):
         return None
     df = pd.read_csv(path).dropna(subset=["supernet_acc"])
-    tau, rho = kendalltau(df["supernet_acc"], df["val_acc_pal"])[0], spearmanr(df["supernet_acc"], df["val_acc_pal"])[0]
+    rows = []
+    for col in ["val_acc", "val_acc_pal", "test_acc", "test_acc_pal"]:
+        tau, p = kendalltau(df["supernet_acc"], df[col])
+        rows.append({"from_scratch": col, "kendall_tau": tau, "p": p,
+                     "spearman": spearmanr(df["supernet_acc"], df[col])[0],
+                     "mean": df[col].mean(), "min": df[col].min(), "max": df[col].max(), "n": len(df)})
+    t = pd.DataFrame(rows).set_index("from_scratch")
     fig, ax = plt.subplots(figsize=(5, 4.5))
-    ax.scatter(df["supernet_acc"], df["val_acc_pal"])
-    ax.set(xlabel="supernet accuracy (inherited weights)", ylabel="accuracy trained from scratch",
-           title=f"RQ5: Kendall τ = {tau:.2f}, Spearman ρ = {rho:.2f}")
+    ax.scatter(df["supernet_acc"], df[target])
+    ax.set(xlabel="supernet accuracy (inherited weights)", ylabel=f"from scratch: {target}",
+           title=f"RQ5: Kendall τ = {t.loc[target, 'kendall_tau']:.2f}, "
+                 f"Spearman ρ = {t.loc[target, 'spearman']:.2f}")
     _save(fig, "rq5")
-    return pd.DataFrame([{"kendall_tau": tau, "spearman": rho, "n": len(df)}])
+    return t
 
 
 def rq6():

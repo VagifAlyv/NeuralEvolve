@@ -1,19 +1,3 @@
-"""All search experiments (RQ1-RQ4) and the final search. Every run writes runs/<rq>/<variant>/seed<k>/evals.csv.
-
-Order (see README):
-    python experiments.py rq1            # algorithms at equal budget, 5 seeds
-    python experiments.py rq2            # speed objective: MACs vs params vs latency predictor
-    python experiments.py rq2 --include-measured   # + real Core ML latency in the loop (slow, 1 seed)
-    python experiments.py rq2-measure    # real Mac latency of every RQ2 front
-    python experiments.py rq3            # joint vs architecture-only search
-    python experiments.py rq3-post       # 'sequential' = architecture-only front + uniform 8/6/4 bits
-    python experiments.py rq4            # GA ablations, 3 seeds
-    python experiments.py final          # long NSGA-II run used for RQ5-RQ7
-    python experiments.py validate-final # supernet accuracy + real latency of the final front
-
-By default accuracy comes from the accuracy predictor (fast). Use --accuracy supernet to score
-every candidate with the supernet instead (slower, ~10 s per new genome, cached).
-"""
 import argparse
 import csv
 import json

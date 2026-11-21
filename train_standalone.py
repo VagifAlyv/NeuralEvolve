@@ -1,7 +1,7 @@
 """Train networks from scratch (no supernet). Used for:
 
 - RQ5: does the supernet rank networks like real training does?
-      python train_standalone.py --sample runs/accuracy_dataset_main.csv --k 15 --epochs 15 --out runs/rq5/standalone.csv
+      python train_standalone.py --sample runs/accuracy_dataset_main.csv --k 15 --epochs 40 --out runs/rq5/standalone_40ep.csv
 - final results: properly train the final Pareto front and the MobileNetV2 baseline
       python train_standalone.py --from-csv runs/final/front_validated.csv --epochs 40 --out runs/final/front_trained.csv
       python train_standalone.py --baseline --epochs 40 --out runs/final/baseline_trained.csv

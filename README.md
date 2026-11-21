@@ -102,7 +102,7 @@ python experiments.py rq4
 python experiments.py final && python experiments.py validate-final
 python latency.py measure --csv runs/final/front_validated.csv          # RQ6: Mac CPU/GPU/ANE
 python latency.py export-iphone --csv runs/final/front_validated.csv    # RQ6: iPhone (see below)
-python train_standalone.py --sample runs/accuracy_dataset_main.csv --k 15 --epochs 15 --out runs/rq5/standalone.csv
+python train_standalone.py --sample runs/accuracy_dataset_main.csv --k 15 --epochs 40 --out runs/rq5/standalone_40ep.csv
 python train_standalone.py --from-csv runs/final/front_validated.csv --epochs 40 --out runs/final/front_trained.csv
 python train_standalone.py --baseline --epochs 40 --out runs/final/baseline_trained.csv
 jupyter notebook notebook.ipynb                    # figures for everything
@@ -111,7 +111,9 @@ jupyter notebook notebook.ipynb                    # figures for everything
 **Training on Google Colab instead.** The GPU-heavy steps (supernet, accuracy dataset, all
 from-scratch training) can run on Colab with `colab.ipynb`, which clones this repository and saves
 results to Google Drive. Core ML latency, the search experiments and the iPhone export stay on the Mac.
-Push your latest code before opening the notebook.
+Push your latest code before opening the notebook. `kaggle.ipynb` does the same on Kaggle (about
+30 free GPU hours per week): choose a `TASK`, attach the needed `runs/` files as a private dataset and use
+"Save & Run All", which keeps running with the browser closed.
 
 Every step can be stopped and restarted: finished runs are skipped and evaluations are cached in
 `runs/cache.sqlite`. Use `--dataset cifar10` on `supernet.py` only to debug quickly.

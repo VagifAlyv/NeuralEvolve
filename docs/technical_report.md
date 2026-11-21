@@ -1,6 +1,7 @@
 # NeuralEvolve: technical report
 
-*NIE-MVI semestral project. Sections marked **TODO** need results from the experiments.*
+*NIE-MVI semestral project. Status 2026-11-20: supernet, surrogates, RQ1 and RQ5 are done; sections
+marked **TODO** still need results (RQ2–RQ4, RQ6, RQ7, final front).*
 
 ## 1. Problem
 
@@ -63,7 +64,17 @@ Two MLPs (input: one-hot of active genes, 261 features; 2 hidden layers of 128) 
 evaluation take microseconds, so experiments with several seeds are affordable. Final fronts are always
 re-checked with the supernet and real measurements.
 
-**TODO:** predictor held-out Spearman / Kendall / MAPE (table from `analysis.predictor_quality()`).
+Held-out quality (20 % of each dataset):
+
+| Predictor | Train / val | Spearman | Kendall | MAPE |
+|---|---|---|---|---|
+| latency (ANE, Mac) | 323 / 80 | 0.82 | 0.62 | 6.6 % |
+| accuracy (supernet) | 803 / 200 | 0.63 | – | – |
+
+For comparison, MACs alone rank the 403 measured latencies with Spearman 0.80 and parameter count with
+only 0.36. The latency predictor is therefore only slightly better than MACs at ranking; RQ2 tests
+whether that difference matters for the search. The accuracy predictor is weaker because the supernet
+accuracies of different subnets lie close together (80 % of them between 81.0 and 84.7 %).
 
 ## 4. Search algorithms
 
@@ -88,7 +99,7 @@ all runs of the same research question (reference point (1, 1, 1)). Runs are cut
 | 2 | speed objective = MACs, params, latency predictor (+ measured latency in the loop) | 3 (1) | 2000 (300) |
 | 3 | joint; architecture only (16-bit); sequential (architecture front + uniform 8/6/4 bits) | 3 | 2000 |
 | 4 | default; population 20/100; mutation 0.5/91, 2/91, 4/91; one-point / stage-wise crossover; no repair | 3 | 2000 |
-| 5 | 15 genomes spread over supernet accuracy, trained 15 epochs from scratch | – | – |
+| 5 | 15 genomes spread over supernet accuracy, trained 40 epochs from scratch | – | – |
 | 6 | final front on Mac CPU / GPU / ANE / ALL and iPhone | – | – |
 | 7 | gene statistics of the final front (NSGA-II, population 100, 5000 evaluations) | 1 | 5000 |
 
@@ -96,12 +107,84 @@ That is 4 + 4 + 3 + 9 = 20 search setups, plus RQ5–RQ7.
 
 ## 6. Results
 
-**TODO** for each RQ: the table and figure from `notebook.ipynb`, and two or three sentences on what it
-means. Also report the search cost in hours (supernet training, datasets, searches).
+### 6.1 Supernet and surrogates
+The supernet was trained for 50 epochs on a Colab T4 (82 GPU minutes). On the 1000-image search-validation
+set the largest, middle and smallest subnets reach 88.7 / 84.2 / 83.5 % (`figures/supernet_training.png`).
+The accuracy dataset (1003 random subnets, mean 82.9 %, range 75.1–88.7 %) and the latency dataset
+(403 networks, about 2 s each on the M4 including Core ML conversion) were collected once and reused by every experiment.
+
+Latency of untrained networks on the Mac ANE ranges from 0.15 to 0.65 ms (median 0.22 ms). The
+MobileNetV2 baselines take 0.16 ms (width 0.35, 96 px) to 0.25 ms (width 1.0, 128 px) on the ANE but
+0.30–0.79 ms on the CPU and 0.66–1.08 ms on the GPU, so the ANE is 2–4× faster than either, even for
+these small networks (`runs/baseline_latency.csv`, `figures/macs_vs_latency.png`).
+
+### 6.2 RQ1: which search algorithm?
+Four algorithms, 2000 evaluations each, 5 seeds, predictor objectives, one shared normalization
+(`figures/rq1.png`).
+
+| Algorithm | Hypervolume (mean ± std) | at 500 / 1000 evals | Front size | p vs NSGA-II |
+|---|---|---|---|---|
+| **NSGA-II** | **0.940 ± 0.009** | 0.819 / 0.883 | 119 | – |
+| Pareto local search | 0.876 ± 0.005 | 0.766 / 0.824 | 161 | 0.008 |
+| Regularized evolution | 0.827 ± 0.020 | 0.748 / 0.788 | 90 | 0.008 |
+| Random search | 0.791 ± 0.017 | 0.761 / 0.775 | 37 | 0.008 |
+
+NSGA-II is ahead from about 150 evaluations on and still improving at 2000. Every NSGA-II seed beats every
+seed of the other algorithms; p = 0.008 (two-sided Mann–Whitney U) is the smallest value possible with
+5 vs 5 seeds. Local search is second: changing one gene at a time works well because the predictors make
+the landscape smooth, but it spends its budget near the archive and finds fewer fast networks. Regularized
+evolution, built for one objective, keeps too few non-dominated parents and only passes random search after
+about 750 evaluations. Random search stops improving after about 500 evaluations: in a space of ~10^40
+genomes, random samples rarely reach the extremes of the front. Each run takes about one minute.
+
+### 6.3 RQ2: which speed objective?
+**TODO** (runs done, fronts being measured on the ANE): hypervolume with *measured* latency for the fronts
+found with MACs, params and the latency predictor (`analysis.rq2()`).
+
+### 6.4 RQ3: joint architecture + compression search
+**TODO** (`analysis.rq3()`).
+
+### 6.5 RQ4: GA ablations
+**TODO** (`analysis.rq4()`).
+
+### 6.6 RQ5: does the supernet rank networks like training from scratch?
+15 genomes sampled across the supernet-accuracy range (75.1–88.7 %) were trained from scratch for 40 epochs on
+Kaggle (T4, 3.3 GPU hours in total) and evaluated with and without the palettization from their genome
+(`figures/rq5.png`).
+
+| From-scratch accuracy compared with | Kendall τ | p | Spearman ρ | Mean (range) |
+|---|---|---|---|---|
+| search-val, uncompressed | 0.22 | 0.25 | 0.31 | 82.7 % (80.7–84.8) |
+| search-val, palettized | 0.36 | 0.06 | 0.47 | 81.5 % (75.6–84.5) |
+| test, uncompressed | 0.33 | 0.09 | 0.49 | 82.6 % (80.6–84.6) |
+| **test, palettized** | **0.50** | **0.008** | **0.67** | 81.7 % (77.1–84.3) |
+
+The supernet score includes the simulated palettization, so the fair comparison is the last row: a
+moderate, significant rank correlation. Two things limit it. First, from-scratch accuracies span only 4
+points, while the noise of one 3925-image test evaluation is about ±0.6 points, so many pairs are swapped
+by chance. Second, the supernet spreads networks over 14 points that shrink to 4 after real training, so
+it exaggerates differences between small and large networks. With 15 epochs instead of 40 the correlation
+was only τ = 0.11: under-trained networks rank by how fast they learn, not by their final accuracy.
+The search therefore uses the supernet as a coarse filter, and the final front is retrained from scratch.
+
+### 6.7 RQ6: latency transfer between devices
+**TODO** (`analysis.rq6()`).
+
+### 6.8 RQ7: what does the ANE like?
+**TODO** (`analysis.rq7()`).
+
+### 6.9 Final front vs MobileNetV2
+**TODO** (`analysis.final_front()`).
+
+### 6.10 Cost
+So far: supernet 1.4 GPU hours (Colab), RQ5 3.3 GPU hours (Kaggle), latency dataset about 15 min on
+the Mac, RQ1 about 20 min on the Mac (all 20 runs). **TODO:** add the
+remaining experiments.
 
 ## 7. Limitations
 
-- Supernet accuracy is a proxy; RQ5 measures how good it is.
+- Supernet accuracy is a proxy with only a moderate rank correlation to real training (RQ5, τ = 0.50),
+  and RQ5 uses 15 networks, so its confidence interval is wide.
 - The predictors can be exploited by the search; final fronts are re-evaluated without them.
 - Latency is measured from Python and includes a small constant overhead; the iPhone numbers come from
   Xcode and are measured differently.
