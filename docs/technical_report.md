@@ -1,7 +1,7 @@
 # NeuralEvolve: technical report
 
-*NIE-MVI semestral project. Status 2026-11-20: supernet, surrogates, RQ1 and RQ5 are done; sections
-marked **TODO** still need results (RQ2–RQ4, RQ6, RQ7, final front).*
+*NIE-MVI semestral project. Status 2026-11-21: supernet, surrogates, RQ1, RQ2 and RQ5 are done; sections
+marked **TODO** still need results (RQ3, RQ4, RQ6, RQ7, final front).*
 
 ## 1. Problem
 
@@ -138,8 +138,25 @@ about 750 evaluations. Random search stops improving after about 500 evaluations
 genomes, random samples rarely reach the extremes of the front. Each run takes about one minute.
 
 ### 6.3 RQ2: which speed objective?
-**TODO** (runs done, fronts being measured on the ANE): hypervolume with *measured* latency for the fronts
-found with MACs, params and the latency predictor (`analysis.rq2()`).
+NSGA-II was run three times (2000 evaluations, 3 seeds each) with a different speed objective: MACs,
+parameter count, or the latency predictor. Every network on each final front (208–392 per objective) was
+then converted to Core ML and timed on the ANE, and the fronts were scored with the *measured* latency
+(`figures/rq2.png`).
+
+| Speed objective | HV, measured (3 objectives) | HV, measured (error–latency only) | Front size | Fastest / median latency |
+|---|---|---|---|---|
+| **latency predictor** | **0.789 ± 0.018** | **0.889** | 131 | 0.134 / 0.175 ms |
+| MACs | 0.772 ± 0.027 | 0.831 | 118 | 0.123 / 0.177 ms |
+| params | 0.745 ± 0.024 | 0.789 | 69 | 0.159 / 0.213 ms |
+
+The predictor gives the best fronts and parameter count the worst, matching how well each proxy ranks
+latency (Spearman 0.82 / 0.80 / 0.36 on the latency dataset). The differences are small and not
+significant with 3 seeds (Mann–Whitney p = 0.4 predictor vs MACs, 0.2 predictor vs params). The gap is
+largest when size is left out, because parameter count is already the size objective: optimizing it for
+speed too only finds small networks, not fast ones. On the MACs fronts, measured latency follows MACs with
+only Spearman 0.57: among networks with similar MACs, latency still differs by operation type and layer
+shape, which MACs cannot see (RQ7 looks at which genes matter). MACs still found the single fastest network
+(0.123 ms), so it is a reasonable free proxy; the predictor is better at the middle of the front.
 
 ### 6.4 RQ3: joint architecture + compression search
 **TODO** (`analysis.rq3()`).
@@ -178,7 +195,8 @@ The search therefore uses the supernet as a coarse filter, and the final front i
 
 ### 6.10 Cost
 So far: supernet 1.4 GPU hours (Colab), RQ5 3.3 GPU hours (Kaggle), latency dataset about 15 min on
-the Mac, RQ1 about 20 min on the Mac (all 20 runs). **TODO:** add the
+the Mac, RQ1 about 20 min and RQ2 9 min of search plus about 4.5 h
+of ANE measurement (954 front networks, Core ML conversion dominates) on the Mac. **TODO:** add the
 remaining experiments.
 
 ## 7. Limitations

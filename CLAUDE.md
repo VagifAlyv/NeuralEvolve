@@ -53,8 +53,9 @@ weights are always trained by SGD (the instructor warned that evolving weights d
   (1003 nets) + predictor (Spearman 0.63), latency dataset (403 nets, Mac ANE) + MobileNetV2 baseline + latency
   predictor (Spearman 0.82; MACs alone 0.81). All in local `runs/`. RQ5 done on Kaggle at 40 epochs
   (`runs/rq5/standalone_40ep.csv`, τ 0.50 vs palettized test acc). RQ1 done (NSGA-II HV 0.940 > local 0.876 >
-  regevo 0.827 > random 0.791). RQ2 searches done, `rq2-measure` in progress. Report filled up to RQ1/RQ5.
-  Next on the Mac: rq2 analysis, rq3, rq4, final, validate-final.
+  regevo 0.827 > random 0.791). RQ2 done (measured-latency HV: predictor 0.789 > MACs 0.772 > params 0.745,
+  not significant at 3 seeds; rq2-measure took ~4.5 h for 954 nets). Report filled for RQ1, RQ2, RQ5.
+  Next on the Mac: rq3, rq4, final, validate-final.
 
 ## Conventions
 - Every evaluation is logged (CSV per run) and cached (`runs/cache.sqlite`); runs are resumable.
