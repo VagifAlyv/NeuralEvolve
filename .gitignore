@@ -21,3 +21,6 @@ lectures/
 
 # editor settings
 .vscode/
+
+# old results from the first version of the project
+runs_old/

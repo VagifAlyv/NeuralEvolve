@@ -1,233 +1,384 @@
-"""Search algorithms. All of them minimize three objectives: [error, latency, size_mb].
+"""The search. Runs on the Mac, because every network is measured on the Apple Neural Engine.
 
-- nsga2:      NSGA-II from pymoo with our own genome operators
-- random:     random search (baseline)
-- regevo:     regularized (aging) evolution, multi-objective tournament (Real et al. 2019)
-- local:      Pareto local search: mutate one gene of an archive member
+    python search.py search     NSGA-II with the trained supernetwork    -> runs/evaluations.csv, runs/front.csv
+    python search.py final      measure the networks trained from scratch -> runs/final.csv, runs/iphone/
 
-Every algorithm only calls `objective(g)`. The Objective counts and logs every call, so all
-algorithms are compared at the same number of evaluations (the budget).
+How one network (one genome) is scored:
+    1. take its weights out of the supernetwork
+    2. recompute its BatchNorm statistics on 2000 training images
+    3. convert it to Core ML (float16) and compress every stage to the bits in the genome
+    4. accuracy:  the Core ML model classifies the 1000 validation images on the Neural Engine
+       latency:   median time of one prediction on the Neural Engine
+       size:      size of the Core ML model file in MB
+The search minimizes three objectives: error (1 - accuracy), latency and size.
 """
+import argparse
 import csv
 import json
+import random
+import re
+import shutil
+import statistics
+import tempfile
 import time
-from collections import deque
+from pathlib import Path
 
-import numpy as np
+import coremltools
+import matplotlib.pyplot as plt
+import numpy
+import torch
+import torch.nn as nn
+from coremltools.optimize.coreml import OpPalettizerConfig, OptimizationConfig, get_weights_metadata, palettize_weights
+from torch.nn.utils.fusion import fuse_conv_bn_eval
 
-import genome as G
+import model
+from train import RUNS_FOLDER, TRAINING_RESOLUTION, evaluation_images, get_device, mobilenet, normalize
 
-LOG_FIELDS = ["eval", "key", "genome", "acc", "latency", "latency_pred", "macs", "params", "size_mb",
-              "f_error", "f_latency", "f_size", "seconds"]
-
-
-class Objective:
-    """genome -> np.array([error, latency, size_mb]), logging every call to a CSV.
-
-    acc_fn:        genome -> accuracy in [0, 1] (accuracy predictor or supernet)
-    latency_mode:  'predictor' (ms), 'macs' (millions), 'params' (millions) or 'measured' (ms, Core ML)
-    transform:     optional genome -> genome applied before evaluating (e.g. force 16-bit for RQ3)
-    """
-
-    def __init__(self, acc_fn, latency_mode="predictor", latency_pred=None, measured=None,
-                 log_path=None, transform=None):
-        self.acc_fn, self.mode, self.latency_pred, self.measured = acc_fn, latency_mode, latency_pred, measured
-        self.transform, self.n = transform, 0
-        self._file = self._writer = None
-        if log_path is not None:
-            self._file = open(log_path, "w", newline="")
-            self._writer = csv.DictWriter(self._file, fieldnames=LOG_FIELDS)
-            self._writer.writeheader()
-
-    def __call__(self, g):
-        t0 = time.time()
-        g = [int(v) for v in g]
-        if self.transform is not None:
-            g = self.transform(g)
-        acc = float(np.clip(self.acc_fn(g), 0.0, 1.0))
-        costs = G.cost_measures(g)
-        lat_pred = self.latency_pred.predict(g) if self.latency_pred is not None else float("nan")
-        latency = {"predictor": lambda: lat_pred,
-                   "macs": lambda: costs["macs"] / 1e6,
-                   "params": lambda: costs["params"] / 1e6,
-                   "measured": lambda: self.measured(g)}[self.mode]()
-        f = np.array([1.0 - acc, latency, costs["size_mb"]])
-        self.n += 1
-        if self._writer is not None:
-            self._writer.writerow({"eval": self.n, "key": G.genome_key(g), "genome": json.dumps(g), "acc": acc,
-                                   "latency": latency, "latency_pred": lat_pred, **costs,
-                                   "f_error": f[0], "f_latency": f[1], "f_size": f[2],
-                                   "seconds": round(time.time() - t0, 3)})
-            self._file.flush()
-        return f
-
-    def close(self):
-        if self._file is not None:
-            self._file.close()
+PROJECT_FOLDER = Path(__file__).resolve().parent
+FIGURES_FOLDER = PROJECT_FOLDER / "figures"
+SMALLEST_COMPRESSED_WEIGHT = 2048   # Core ML leaves smaller weights uncompressed
+STAGE_NAME = re.compile(r"stages_(\d+)_")   # Core ML weight names look like "stages_3_1_project_weight"
 
 
-# ---------------------------------------------------------------- Pareto helpers
+# ------------------------------------------------------------------ scoring one network
 
-def dominates(a, b):
-    return bool(np.all(a <= b) and np.any(a < b))
-
-
-def nondominated_mask(F):
-    F = np.asarray(F, dtype=float)
-    mask = np.ones(len(F), dtype=bool)
-    for i in range(len(F)):
-        better_eq = np.all(F <= F[i], axis=1)
-        strictly = np.any(F < F[i], axis=1)
-        if np.any(better_eq & strictly):
-            mask[i] = False
-    return mask
+@torch.no_grad()
+def recalibrate_batchnorm(network, calibration_images, resolution, device):
+    """A network taken out of the supernetwork has no BatchNorm statistics yet: compute them."""
+    for layer in network.modules():
+        if isinstance(layer, nn.BatchNorm2d):
+            layer.reset_running_stats()
+            layer.momentum = None   # None = plain average over all batches
+    network.train()
+    for start in range(0, len(calibration_images), 250):
+        network(normalize(calibration_images[start:start + 250], resolution, device))
+    network.eval()
 
 
-def hypervolume(F, lower, upper):
-    """Hypervolume of the points F after scaling every objective to [0, 1] with fixed bounds.
-    Reference point = (1, 1, 1); points outside the bounds contribute nothing."""
-    from pymoo.indicators.hv import HV
-    F = np.asarray(F, dtype=float)
-    if len(F) == 0:
-        return 0.0
-    Z = (F - np.asarray(lower)) / (np.asarray(upper) - np.asarray(lower))
-    Z = Z[np.all(Z < 1.0, axis=1)]
-    if len(Z) == 0:
-        return 0.0
-    Z = Z[nondominated_mask(Z)]
-    return float(HV(ref_point=np.ones(F.shape[1]))(Z))
+def fold_batchnorm(network):
+    """Merge every BatchNorm into the convolution before it (layer "x" and "x_bn").
+    Core ML would do it too, but then the weights lose their names and we could not find the stages."""
+    network = network.cpu().eval()
+    for layer in list(network.modules()):
+        for name in list(layer._modules):
+            if name.endswith("_bn"):
+                convolution_name = name[:-len("_bn")]
+                convolution = getattr(layer, convolution_name)
+                setattr(layer, convolution_name, fuse_conv_bn_eval(convolution, getattr(layer, name)))
+                setattr(layer, name, nn.Identity())
+    return network
 
 
-# ---------------------------------------------------------------- operators shared by the algorithms
-
-def mutate_changed(g, rate, rng, tries=50):
-    """Mutate until the NETWORK changes (a change in an inactive gene alone does not count)."""
-    key = G.genome_key(g)
-    for _ in range(tries):
-        child = G.mutate(g, rate, rng)
-        if G.genome_key(child) != key:
-            return child
-    return mutate_one(g, rng)
-
-
-def mutate_one(g, rng):
-    """Change exactly one active gene to a different option."""
-    active = [i for i, a in enumerate(G.active_mask(g)) if a]
-    i = rng.choice(active)
-    child = list(g)
-    child[i] = rng.choice([v for v in range(G.N_CHOICES[i]) if v != g[i]])
-    return child
-
-
-CROSSOVERS = {"uniform": G.crossover_uniform, "one_point": G.crossover_one_point,
-              "stagewise": G.crossover_stagewise}
-
-
-# ---------------------------------------------------------------- algorithms
-
-def random_search(objective, budget, rng):
-    for _ in range(budget):
-        objective(G.random_genome(rng))
+def convert_to_coreml(network, resolution, stage_bits):
+    """PyTorch -> Core ML in float16. Then every stage is compressed with k-means palettization:
+    each weight is replaced by one of 2^bits shared values. stage_bits = None means no compression."""
+    example = torch.rand(1, 3, resolution, resolution)
+    traced = torch.jit.trace(network, example)
+    coreml_model = coremltools.convert(
+        traced,
+        inputs=[coremltools.TensorType(name="image", shape=example.shape)],
+        outputs=[coremltools.TensorType(name="logits")],
+        convert_to="mlprogram",
+        compute_precision=coremltools.precision.FLOAT16,
+        minimum_deployment_target=coremltools.target.iOS17,
+    )
+    if stage_bits is None:
+        return coreml_model
+    settings = {}
+    for weight_name in get_weights_metadata(coreml_model, weight_threshold=SMALLEST_COMPRESSED_WEIGHT):
+        match = STAGE_NAME.search(weight_name)
+        if match is None:
+            continue   # stem, head and classifier stay at 16 bits
+        bits = stage_bits[int(match.group(1))]
+        if bits < 16:
+            settings[weight_name] = OpPalettizerConfig(mode="kmeans", nbits=bits,
+                                                       weight_threshold=SMALLEST_COMPRESSED_WEIGHT)
+    if not settings:
+        return coreml_model
+    return palettize_weights(coreml_model, OptimizationConfig(op_name_configs=settings))
 
 
-def regularized_evolution(objective, budget, rng, pop_size=50, sample_size=10, rate=None):
-    """Aging evolution: the OLDEST individual dies, not the worst. The parent is a random
-    non-dominated member of a random sample (multi-objective tournament)."""
-    pop = deque()
-    for _ in range(min(pop_size, budget)):
-        g = G.random_genome(rng)
-        pop.append((g, objective(g)))
-    for _ in range(budget - len(pop)):
-        sample = rng.sample(list(pop), min(sample_size, len(pop)))
-        nd = np.flatnonzero(nondominated_mask([f for _, f in sample]))
-        parent = sample[int(rng.choice(list(nd)))][0]
-        child = mutate_changed(parent, rate, rng)
-        pop.append((child, objective(child)))
-        pop.popleft()
+def folder_size_mb(folder):
+    total_bytes = 0
+    for file in folder.rglob("*"):
+        if file.is_file():
+            total_bytes += file.stat().st_size
+    return total_bytes / 1e6
 
 
-def pareto_local_search(objective, budget, rng, n_init=10):
-    """Keep an archive of non-dominated genomes; repeatedly change one gene of a random member."""
-    archive = []
+def measure_on_neural_engine(coreml_model, images, labels, resolution, save_to=None):
+    """Accuracy, latency and size of a Core ML model, running on the Neural Engine."""
+    temporary_folder = Path(tempfile.mkdtemp())
+    path = temporary_folder / "model.mlpackage"
+    if save_to is not None:
+        path = save_to
+    coreml_model.save(str(path))
+    size_mb = folder_size_mb(path)
+    loaded = coremltools.models.MLModel(str(path), compute_units=coremltools.ComputeUnit.CPU_AND_NE)
 
-    def add(g, f):
-        if any(dominates(a, f) or np.array_equal(a, f) for _, a in archive):
-            return
-        archive[:] = [(h, a) for h, a in archive if not dominates(f, a)] + [(g, f)]
+    inputs = normalize(images, resolution, torch.device("cpu")).numpy()
+    correct = 0
+    for image, label in zip(inputs, labels.tolist()):
+        logits = loaded.predict({"image": image[numpy.newaxis]})["logits"]
+        if int(logits.argmax()) == label:
+            correct += 1
 
-    for _ in range(min(n_init, budget)):
-        g = G.random_genome(rng)
-        add(g, objective(g))
-    for _ in range(budget - min(n_init, budget)):
-        parent = rng.choice(archive)[0]
-        child = mutate_one(parent, rng)
-        add(child, objective(child))
-
-
-def nsga2(objective, budget, rng, seed, pop_size=50, crossover="uniform", crossover_prob=0.9, rate=None,
-          repair=True):
-    """NSGA-II from pymoo with our sampling, crossover, mutation and (optional) repair.
-    pymoo finishes the current generation, so it may go slightly over budget; analysis cuts every
-    log at exactly `budget` evaluations."""
-    from pymoo.algorithms.moo.nsga2 import NSGA2
-    from pymoo.core.crossover import Crossover
-    from pymoo.core.duplicate import ElementwiseDuplicateElimination
-    from pymoo.core.mutation import Mutation
-    from pymoo.core.problem import Problem
-    from pymoo.core.repair import NoRepair, Repair
-    from pymoo.core.sampling import Sampling
-    from pymoo.optimize import minimize
-    from pymoo.termination import get_termination
-
-    n_choices = np.array(G.N_CHOICES)
-    cross_fn = CROSSOVERS[crossover]
-    mut_rate = 1.0 / G.GENOME_LEN if rate is None else rate
-
-    class GenomeProblem(Problem):
-        def __init__(self):
-            super().__init__(n_var=G.GENOME_LEN, n_obj=3, xl=np.zeros(G.GENOME_LEN), xu=n_choices - 1, vtype=int)
-
-        def _evaluate(self, X, out, *args, **kwargs):
-            out["F"] = np.array([objective(x) for x in X])
-
-    class GenomeSampling(Sampling):
-        def _do(self, problem, n_samples, **kwargs):
-            return np.array([G.random_genome(rng) for _ in range(n_samples)])
-
-    class GenomeCrossover(Crossover):
-        def __init__(self):
-            super().__init__(n_parents=2, n_offsprings=2, prob=crossover_prob)
-
-        def _do(self, problem, X, **kwargs):
-            _, n_matings, n_var = X.shape
-            Y = np.empty((2, n_matings, n_var), dtype=X.dtype)
-            for k in range(n_matings):
-                a, b = list(X[0, k]), list(X[1, k])
-                Y[0, k], Y[1, k] = cross_fn(a, b, rng), cross_fn(b, a, rng)
-            return Y
-
-    class ResetMutation(Mutation):
-        def _do(self, problem, X, **kwargs):
-            X = X.copy()
-            for row in X:
-                for i in range(len(row)):
-                    if rng.random() < mut_rate:
-                        row[i] = rng.randrange(int(n_choices[i]))
-            return X
-
-    class CanonicalRepair(Repair):
-        def _do(self, problem, X, **kwargs):
-            return np.array([G.repair(list(x)) for x in X])
-
-    class SameNetwork(ElementwiseDuplicateElimination):
-        def is_equal(self, a, b):
-            return G.genome_key(a.X) == G.genome_key(b.X)
-
-    algorithm = NSGA2(pop_size=pop_size, sampling=GenomeSampling(), crossover=GenomeCrossover(),
-                      mutation=ResetMutation(), repair=CanonicalRepair() if repair else NoRepair(),
-                      eliminate_duplicates=SameNetwork())
-    minimize(GenomeProblem(), algorithm, get_termination("n_eval", budget), seed=seed, verbose=False)
+    times = []
+    for repeat in range(50):
+        start = time.perf_counter()
+        loaded.predict({"image": inputs[:1]})
+        times.append((time.perf_counter() - start) * 1000)
+    shutil.rmtree(temporary_folder, ignore_errors=True)
+    return {"accuracy": correct / len(labels), "latency_ms": statistics.median(times), "size_mb": size_mb}
 
 
-ALGORITHMS = {"nsga2": nsga2, "random": random_search, "regevo": regularized_evolution,
-              "local": pareto_local_search}
+class Scorer:
+    """genome -> {accuracy, latency_ms, size_mb}. Every result is written to runs/evaluations.csv,
+    and results already in that file are reused, so a stopped search can simply be started again."""
+
+    columns = ["genome", "accuracy", "latency_ms", "size_mb", "seconds"]
+
+    def __init__(self, supernetwork_path):
+        self.device = get_device()
+        self.supernetwork = model.SuperNetwork()
+        self.supernetwork.load_state_dict(torch.load(supernetwork_path, map_location="cpu")["weights"])
+        self.images = evaluation_images()
+        self.log_path = RUNS_FOLDER / "evaluations.csv"
+        self.results = {}
+        if self.log_path.exists():
+            with open(self.log_path) as file:
+                for row in csv.DictReader(file):
+                    self.results[row["genome"]] = {"accuracy": float(row["accuracy"]),
+                                                   "latency_ms": float(row["latency_ms"]),
+                                                   "size_mb": float(row["size_mb"])}
+        else:
+            with open(self.log_path, "w", newline="") as file:
+                csv.writer(file).writerow(self.columns)
+
+    def __call__(self, genome):
+        key = json.dumps(genome)
+        if key in self.results:
+            return self.results[key]
+        start = time.time()
+        resolution, stages = model.describe(genome)
+        stage_bits = [stage["bits"] for stage in stages]
+        network = model.extract(self.supernetwork, genome).to(self.device)
+        calibration_images, calibration_labels = self.images["calibration"]
+        recalibrate_batchnorm(network, calibration_images, resolution, self.device)
+        coreml_model = convert_to_coreml(fold_batchnorm(network), resolution, stage_bits)
+        validation_images, validation_labels = self.images["validation"]
+        result = measure_on_neural_engine(coreml_model, validation_images, validation_labels, resolution)
+        self.results[key] = result
+        with open(self.log_path, "a", newline="") as file:
+            csv.writer(file).writerow([key, result["accuracy"], result["latency_ms"], result["size_mb"],
+                                       round(time.time() - start, 1)])
+        return result
+
+
+def objectives(result):
+    """All three are minimized."""
+    return (1 - result["accuracy"], result["latency_ms"], result["size_mb"])
+
+
+# ------------------------------------------------------------------ NSGA-II
+
+def dominates(first, second):
+    """First is at least as good in every objective and better in at least one."""
+    no_worse = all(mine <= theirs for mine, theirs in zip(first, second))
+    strictly_better = any(mine < theirs for mine, theirs in zip(first, second))
+    return no_worse and strictly_better
+
+
+def sort_into_fronts(scores):
+    """Front 0 = solutions nobody dominates, front 1 = dominated only by front 0, and so on."""
+    dominated_solutions = [[] for score in scores]
+    domination_count = [0 for score in scores]
+    fronts = [[]]
+    for first in range(len(scores)):
+        for second in range(len(scores)):
+            if dominates(scores[first], scores[second]):
+                dominated_solutions[first].append(second)
+            elif dominates(scores[second], scores[first]):
+                domination_count[first] += 1
+        if domination_count[first] == 0:
+            fronts[0].append(first)
+    while fronts[-1]:
+        next_front = []
+        for solution in fronts[-1]:
+            for dominated in dominated_solutions[solution]:
+                domination_count[dominated] -= 1
+                if domination_count[dominated] == 0:
+                    next_front.append(dominated)
+        fronts.append(next_front)
+    return fronts[:-1]
+
+
+def crowding_distance(scores, front):
+    """How empty the space around each solution of a front is. Larger = more worth keeping."""
+    distance = {solution: 0.0 for solution in front}
+    for objective in range(len(scores[front[0]])):
+        pairs = [(scores[solution][objective], solution) for solution in front]
+        pairs.sort()
+        ordered = [solution for value, solution in pairs]
+        lowest = scores[ordered[0]][objective]
+        highest = scores[ordered[-1]][objective]
+        distance[ordered[0]] = float("inf")
+        distance[ordered[-1]] = float("inf")
+        if highest == lowest:
+            continue
+        for position in range(1, len(ordered) - 1):
+            gap = scores[ordered[position + 1]][objective] - scores[ordered[position - 1]][objective]
+            distance[ordered[position]] += gap / (highest - lowest)
+    return distance
+
+
+def rank_population(scores):
+    """For every solution: (front number, crowding distance)."""
+    rank = {}
+    for front_number, front in enumerate(sort_into_fronts(scores)):
+        for solution, distance in crowding_distance(scores, front).items():
+            rank[solution] = (front_number, distance)
+    return rank
+
+
+def better(first, second, rank):
+    """Lower front wins; in the same front, the larger crowding distance wins."""
+    first_front, first_distance = rank[first]
+    second_front, second_distance = rank[second]
+    if first_front != second_front:
+        return first_front < second_front
+    return first_distance > second_distance
+
+
+def tournament(rank, generator):
+    """Pick two random solutions, keep the better one."""
+    first = generator.randrange(len(rank))
+    second = generator.randrange(len(rank))
+    if better(first, second, rank):
+        return first
+    return second
+
+
+def nsga2(score, population_size, generations, seed):
+    generator = random.Random(seed)
+    population = [model.random_genome(generator) for number in range(population_size)]
+    scores = [objectives(score(genome)) for genome in population]
+
+    for generation in range(generations):
+        rank = rank_population(scores)
+        children = []
+        while len(children) < population_size:
+            mother = population[tournament(rank, generator)]
+            father = population[tournament(rank, generator)]
+            child = model.mutate(model.crossover(mother, father, generator), generator)
+            if child not in population and child not in children:
+                children.append(child)
+        everyone = population + children
+        everyone_scores = scores + [objectives(score(child)) for child in children]
+
+        # keep the best half: whole fronts first, the last front by crowding distance
+        survivors = []
+        for front in sort_into_fronts(everyone_scores):
+            if len(survivors) + len(front) <= population_size:
+                survivors.extend(front)
+            else:
+                distance = crowding_distance(everyone_scores, front)
+                pairs = [(distance[solution], solution) for solution in front]
+                pairs.sort(reverse=True)
+                most_isolated = [solution for value, solution in pairs]
+                survivors.extend(most_isolated[:population_size - len(survivors)])
+                break
+        population = [everyone[solution] for solution in survivors]
+        scores = [everyone_scores[solution] for solution in survivors]
+        best_accuracy = 1 - min(error for error, latency, size in scores)
+        print(f"generation {generation + 1}/{generations}  best accuracy {best_accuracy:.3f}", flush=True)
+
+
+def save_front(scorer):
+    """The Pareto front of every network evaluated during the search -> runs/front.csv and a figure."""
+    genomes = list(scorer.results)
+    results = [scorer.results[genome] for genome in genomes]
+    front = sort_into_fronts([objectives(result) for result in results])[0]
+    with open(RUNS_FOLDER / "front.csv", "w", newline="") as file:
+        writer = csv.writer(file)
+        writer.writerow(["genome", "accuracy", "latency_ms", "size_mb"])
+        for solution in front:
+            result = results[solution]
+            writer.writerow([genomes[solution], result["accuracy"], result["latency_ms"], result["size_mb"]])
+    print(f"{len(front)} networks on the Pareto front -> runs/front.csv")
+
+    plt.figure(figsize=(6, 4))
+    plt.scatter([result["latency_ms"] for result in results], [result["accuracy"] for result in results],
+                s=6, color="lightgray", label="all evaluated networks")
+    plotted = plt.scatter([results[solution]["latency_ms"] for solution in front],
+                          [results[solution]["accuracy"] for solution in front],
+                          c=[results[solution]["size_mb"] for solution in front], s=20, label="Pareto front")
+    plt.colorbar(plotted, label="size (MB)")
+    plt.xlabel("latency on the Neural Engine (ms)")
+    plt.ylabel("validation accuracy (supernetwork)")
+    plt.legend()
+    plt.tight_layout()
+    FIGURES_FOLDER.mkdir(exist_ok=True)
+    plt.savefig(FIGURES_FOLDER / "front.png", dpi=150)
+
+
+# ------------------------------------------------------------------ final networks
+
+def measure_final_networks():
+    """Convert every network trained from scratch to Core ML, measure it on the test images,
+    and keep the .mlpackage files for the iPhone (Xcode -> Performance report)."""
+    iphone_folder = RUNS_FOLDER / "iphone"
+    iphone_folder.mkdir(parents=True, exist_ok=True)
+    test_images, test_labels = evaluation_images()["test"]
+    rows = []
+    for path in sorted((RUNS_FOLDER / "trained").glob("*.pt")):
+        job = torch.load(path, map_location="cpu")
+        if job["genome"] is None:
+            network = mobilenet(job["width"])
+            resolution = TRAINING_RESOLUTION
+            stage_bits = None
+        else:
+            network = model.Network(job["genome"])
+            resolution, stages = model.describe(job["genome"])
+            stage_bits = [stage["bits"] for stage in stages]
+        network.load_state_dict(job["weights"])
+        coreml_model = convert_to_coreml(fold_batchnorm(network), resolution, stage_bits)
+        save_to = iphone_folder / f"{job['name']}.mlpackage"
+        shutil.rmtree(save_to, ignore_errors=True)
+        result = measure_on_neural_engine(coreml_model, test_images, test_labels, resolution, save_to)
+        result["name"] = job["name"]
+        rows.append(result)
+        print(f"{job['name']:18s} test accuracy {result['accuracy']:.3f}  "
+              f"latency {result['latency_ms']:.2f} ms  size {result['size_mb']:.2f} MB", flush=True)
+
+    with open(RUNS_FOLDER / "final.csv", "w", newline="") as file:
+        writer = csv.DictWriter(file, fieldnames=["name", "accuracy", "latency_ms", "size_mb"])
+        writer.writeheader()
+        writer.writerows(rows)
+
+    plt.figure(figsize=(6, 4))
+    for prefix, label in [("front", "ours (searched)"), ("mobilenetv2", "MobileNetV2")]:
+        chosen = [row for row in rows if row["name"].startswith(prefix)]
+        plt.scatter([row["latency_ms"] for row in chosen], [row["accuracy"] for row in chosen], label=label)
+    plt.xlabel("latency on the Neural Engine (ms)")
+    plt.ylabel("test accuracy (trained from scratch)")
+    plt.legend()
+    plt.tight_layout()
+    FIGURES_FOLDER.mkdir(exist_ok=True)
+    plt.savefig(FIGURES_FOLDER / "final.png", dpi=150)
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Search networks for the Neural Engine.")
+    parser.add_argument("command", choices=["search", "final"])
+    parser.add_argument("--population", type=int, default=40)
+    parser.add_argument("--generations", type=int, default=25)
+    parser.add_argument("--seed", type=int, default=0)
+    arguments = parser.parse_args()
+    RUNS_FOLDER.mkdir(exist_ok=True)
+    if arguments.command == "search":
+        scorer = Scorer(RUNS_FOLDER / "supernetwork.pt")
+        nsga2(scorer, arguments.population, arguments.generations, arguments.seed)
+        save_front(scorer)
+    else:
+        measure_final_networks()
